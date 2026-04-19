@@ -1,5 +1,9 @@
 # Localhost Web Crawler and Search MVP
 
+**Name:** Ömer Talha Demirci  
+**Student ID:** 150210711  
+**Assignment:** HW2 - Multi-Agent Web Crawler
+
 This repository contains a Python crawler and search system built for a university assignment. It crawls a localhost-accessible website from an origin URL, stores crawl state durably in SQLite, indexes extracted HTML text, and supports search and status inspection through both a small command-line interface and a lightweight localhost web UI.
 
 The runtime system is a normal Python application. The multi-agent aspect of the project applies to the development workflow and documentation process, not to the production runtime.
