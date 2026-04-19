@@ -4,7 +4,7 @@
 
 This document explains the multi-agent workflow used to develop this project for the assignment. It describes how the work was split across separate agent-oriented chats, how the outputs were consolidated, and how those outputs map to the current repository.
 
-Important clarification: the final runtime system is **not** a multi-agent runtime. When the project runs, it is a normal Python application with modules such as `app/main.py`, `app/crawler.py`, `app/search.py`, and `app/status.py`. The multi-agent requirement was satisfied in the **development workflow**, not in the production runtime.
+Important clarification: the final runtime system is **not** a multi-agent runtime. When the project runs, it is a normal Python application with modules such as `app/main.py`, `app/crawler.py`, `app/search.py`, `app/status.py`, and `app/server.py`. The multi-agent requirement was satisfied in the **development workflow**, not in the production runtime.
 
 ## Why A Multi-Agent Workflow Was Used
 
@@ -14,7 +14,7 @@ The project had a natural decomposition:
 - architecture and storage design
 - crawling and parsing
 - search
-- operator-facing status and CLI integration
+- operator-facing status, localhost web UI, and CLI integration
 - review and validation
 
 Using separate agents for those areas made the work more manageable. Each agent could produce focused alternatives and implementation drafts without mixing all concerns into one long conversation. That was useful for this assignment because the system has clear module boundaries and the deliverables include both documentation and working code.
@@ -36,8 +36,8 @@ The development workflow used these agents:
 | Infra Agent | Choose the MVP architecture and implement the storage layer and crawl lifecycle helpers | `docs/recommendation.md`, `app/index_store.py` |
 | Crawler Agent | Implement URL normalization, HTML parsing, fetch flow, and BFS crawl coordination | `app/parser.py`, `app/crawler.py` |
 | Search Agent | Implement query validation, ranking, and search over committed indexed content | `app/search.py` |
-| UI Agent | Implement the operator-facing status view for the CLI | `app/status.py` |
-| Critic Agent | Review proposals and implementation drafts for correctness gaps, edge cases, and scope control | Reflected indirectly in accepted/rejected decisions rather than a standalone module commit |
+| UI Agent | Implement the operator-facing status view and lightweight localhost web UI | `app/status.py`, `app/server.py` |
+| Critic Agent | Review proposals and implementation drafts for correctness gaps, edge cases, and scope control | Reflected indirectly in accepted/rejected decisions rather than a standalone feature module commit |
 | Integrator | Consolidate module outputs, wire the CLI, and verify the full system end to end | `app/main.py`, `tests/test_end_to_end.py` |
 
 ## Responsibility Of Each Agent
@@ -92,13 +92,15 @@ Its responsibilities were:
 
 ### UI Agent
 
-The UI Agent did not build a graphical UI. In this project, the operator-facing interface is CLI-first, so the UI work became status formatting in [`app/status.py`](../app/status.py).
+The UI Agent handled the operator-facing presentation layer in [`app/status.py`](../app/status.py) and [`app/server.py`](../app/server.py). In the current repository, that includes both the read-only status path and a lightweight localhost web UI on top of the same crawler, search, and storage modules.
 
 Its responsibilities were:
 
 - build a read-only status snapshot
 - format crawl state for human inspection
 - show counters, queue information, activity, and recent events
+- provide form-based localhost pages for crawl, search, and status
+- launch background crawl jobs from the web UI without changing the crawler core
 
 ### Critic Agent
 
@@ -118,7 +120,8 @@ The Integrator connected the module-level work into a runnable project. Its conc
 
 Its responsibilities were:
 
-- wire crawl, search, and status into one CLI entrypoint
+- wire crawl, search, status, and the localhost web UI into one CLI entrypoint
+- expose the localhost web UI through the `serve` command in [`app/main.py`](../app/main.py)
 - align function boundaries across modules
 - validate the repo with a deterministic end-to-end test
 - make sure the final repository was coherent as a single submission
@@ -144,9 +147,9 @@ The exact prompts are not reproduced here, but at a high level the tasks were:
 - `Infra Agent`: recommend a practical MVP architecture and then implement the local storage and crawl lifecycle helpers
 - `Crawler Agent`: implement URL normalization, HTML parsing, fetching, and BFS crawl execution against the storage layer
 - `Search Agent`: implement a practical search path that works on committed index data and returns the required triple output
-- `UI Agent`: implement a usable operator-facing status view for the CLI-first MVP
+- `UI Agent`: implement a usable operator-facing status view and a lightweight localhost web UI for crawl, search, and status
 - `Critic Agent`: review the outputs for correctness risks, scope creep, and inconsistencies between docs and code
-- `Integrator`: wire the modules into one CLI and verify the integrated system with an end-to-end test
+- `Integrator`: wire the modules into one CLI, expose the localhost web UI through the `serve` command, and verify the integrated system with an end-to-end test
 
 These were development tasks. They were not runtime prompts for collaborating processes inside the application.
 
@@ -154,13 +157,13 @@ These were development tasks. They were not runtime prompts for collaborating pr
 
 The following decisions were proposed by agents and accepted by the human because they fit the assignment and were practical to implement:
 
-- **CLI-first MVP instead of a web-first system.** This appears in [`docs/recommendation.md`](./recommendation.md) and in the final CLI entrypoint [`app/main.py`](../app/main.py).
+- **CLI-first MVP with a lightweight localhost web UI on top of the same modules.** This appears in the current runtime shape described in [`README.md`](../README.md), in the web UI implementation [`app/server.py`](../app/server.py), and in the final CLI entrypoint [`app/main.py`](../app/main.py).
 - **SQLite through the Python standard library.** This appears in the recommendation and in the implemented storage layer in [`app/index_store.py`](../app/index_store.py).
 - **A modular code split by responsibility.** The final codebase keeps storage, parser, crawler, search, status, and entrypoint logic separate.
 - **Database-backed deduplication using `UNIQUE(job_id, canonical_url)`.** This is the core duplicate-prevention rule in [`app/index_store.py`](../app/index_store.py).
 - **Strict BFS ordering by depth.** The final crawl loop in [`app/crawler.py`](../app/crawler.py) processes unfinished depths in ascending order and only leases queued pages at the current depth.
 - **Search over committed data only.** [`app/search.py`](../app/search.py) only returns rows where `page.state = 'indexed'`.
-- **Read-only status reporting.** [`app/status.py`](../app/status.py) stays on the read path and does not mutate crawl state.
+- **Read-only status reporting plus a minimal localhost presentation layer.** [`app/status.py`](../app/status.py) stays on the read path, while [`app/server.py`](../app/server.py) exposes form-based crawl, search, and status pages without changing the underlying crawler/search/status modules.
 - **Deterministic localhost integration testing.** [`tests/test_end_to_end.py`](../tests/test_end_to_end.py) verifies crawl, deduplication, search, and status together.
 
 ## Decisions That Were Rejected Or Deferred
@@ -168,7 +171,7 @@ The following decisions were proposed by agents and accepted by the human becaus
 The multi-agent workflow also produced alternatives that were explicitly not adopted in the final runtime:
 
 - **No multi-agent runtime in production.** The application does not run PRD/Search/Crawler/UI agents at runtime. The runtime is a normal Python CLI application.
-- **No web server as the main interface for MVP.** The recommendation allowed a future UI layer, but the shipped system is CLI-first.
+- **No production-style web application stack.** The shipped system includes a small localhost UI, but it is intentionally a lightweight `http.server` interface rather than a larger web framework or multi-user web service.
 - **No distributed crawler, external database, or separate search engine.** Those were outside the assignment scope and unnecessary for the MVP.
 - **No browser automation or JavaScript rendering.** The parser and crawler stay standard-library and HTML-focused.
 - **No mandatory FTS5 dependency in the shipped version.** The recommendation preferred SQLite FTS when available, but the implemented search path in [`app/search.py`](../app/search.py) is a deterministic lexical fallback using ordinary SQLite tables.
@@ -202,7 +205,9 @@ The commit history preserves the agent-oriented workflow directly in the commit 
 | `1f611e1` | Crawler Agent | Sequential BFS crawl coordinator and fetch flow | `app/crawler.py` |
 | `0f20507` | Search Agent | Search implementation | `app/search.py` |
 | `7134da6` | UI Agent | Read-only crawl status snapshot and formatter | `app/status.py` |
+| `459f193` | UI Agent | Add lightweight localhost web UI and background crawl server | `app/server.py` |
 | `b0224e7` | Integrator | CLI entrypoint wiring | `app/main.py` |
+| `7a0ef14` | Integrator | Expose localhost web UI through serve command | `app/main.py` |
 | `5b5e629` | Integrator | Deterministic end-to-end validation | `tests/test_end_to_end.py` |
 
 This is the practical mapping from workflow to codebase:
@@ -210,6 +215,7 @@ This is the practical mapping from workflow to codebase:
 - requirements came first
 - architecture and storage followed
 - crawler/search/status modules were implemented against that base
+- the localhost web UI was added after the core crawl/search/status modules existed
 - integration happened after module-level work existed
 - end-to-end validation was added last
 
