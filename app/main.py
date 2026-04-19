@@ -1,8 +1,8 @@
 """CLI entrypoint for the crawler/search MVP.
 
 This module intentionally stays small and standard-library only. It wires the
-existing crawler, search, status, and storage helpers into a practical command
-line interface without introducing HTTP or background-process features yet.
+existing crawler, search, status, server, and storage helpers into a practical
+command-line interface.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from .crawler import crawl_job
 from . import index_store
 from .parser import normalize_url
 from .search import search_query
+from .server import run_server
 from .status import format_status_text, get_job_status
 
 
@@ -90,6 +91,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     status_parser.set_defaults(handler=_handle_status)
 
+    serve_parser = subparsers.add_parser("serve", help="run the localhost web UI")
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="host interface to bind (default: 127.0.0.1)",
+    )
+    serve_parser.add_argument(
+        "--port",
+        default=8000,
+        type=_positive_int,
+        help="port to bind (default: 8000)",
+    )
+    serve_parser.set_defaults(handler=_handle_serve)
+
     return parser
 
 
@@ -161,6 +176,16 @@ def _handle_status(args: argparse.Namespace) -> int:
         job_id=args.job,
     )
     print(format_status_text(status_data))
+    return EXIT_SUCCESS
+
+
+def _handle_serve(args: argparse.Namespace) -> int:
+    """Run the localhost web UI until interrupted."""
+
+    run_server(
+        host=args.host,
+        port=args.port,
+    )
     return EXIT_SUCCESS
 
 
