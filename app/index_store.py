@@ -213,6 +213,57 @@ def create_crawl_job(
             return int(cursor.lastrowid)
 
 
+def record_crawl_event(
+    db_path: str | Path,
+    job_id: int,
+    event_type: str,
+    message: str,
+    page_id: int | None = None,
+) -> int:
+    """Insert a crawl event row and return its id.
+
+    This helper gives the crawler coordinator a durable place to record
+    failures, skips, stop events, and other lifecycle messages.
+    """
+
+    _validate_positive_int(job_id, "job_id")
+    _validate_non_empty_text(event_type, "event_type")
+    _validate_non_empty_text(message, "message")
+    if page_id is not None:
+        _validate_positive_int(page_id, "page_id")
+
+    initialize_schema(db_path)
+
+    with closing(get_connection(db_path)) as connection:
+        with connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO crawl_event (job_id, page_id, event_type, message)
+                VALUES (?, ?, ?, ?)
+                """,
+                (job_id, page_id, event_type, message),
+            )
+            return int(cursor.lastrowid)
+
+
+def get_job(db_path: str | Path, job_id: int) -> dict[str, Any]:
+    """Return a crawl job row as a plain dictionary."""
+
+    _validate_positive_int(job_id, "job_id")
+    initialize_schema(db_path)
+
+    with closing(get_connection(db_path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM crawl_job WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+
+    if row is None:
+        raise ValueError(f"job_id {job_id} does not exist")
+
+    return dict(row)
+
+
 def insert_origin_page(db_path: str | Path, job_id: int, origin_url: str) -> int:
     """Insert the origin page for a crawl job at depth 0.
 
@@ -311,6 +362,122 @@ def insert_discovered_page(
                 )
 
             return page_id
+
+
+def list_queued_page_ids_at_depth(
+    db_path: str | Path,
+    job_id: int,
+    depth: int,
+    limit: int | None = None,
+) -> list[int]:
+    """Return queued page ids for one job and depth in stable order.
+
+    The result is ordered by page id so the coordinator can lease work in a
+    deterministic order within the current BFS depth.
+    """
+
+    _validate_positive_int(job_id, "job_id")
+    _validate_non_negative_int(depth, "depth")
+    if limit is not None:
+        _validate_positive_int(limit, "limit")
+
+    initialize_schema(db_path)
+
+    query = """
+        SELECT id
+        FROM page
+        WHERE job_id = ? AND depth = ? AND state = 'queued'
+        ORDER BY id ASC
+    """
+    parameters: list[Any] = [job_id, depth]
+
+    if limit is not None:
+        query += " LIMIT ?"
+        parameters.append(limit)
+
+    with closing(get_connection(db_path)) as connection:
+        rows = connection.execute(query, parameters).fetchall()
+
+    return [int(row["id"]) for row in rows]
+
+
+def lease_page(db_path: str | Path, page_id: int) -> bool:
+    """Transition a page from `queued` to `leased` if it is still available.
+
+    Returns `True` when the lease succeeds. Returns `False` when the page does
+    not exist or is no longer in the `queued` state.
+    """
+
+    _validate_positive_int(page_id, "page_id")
+    initialize_schema(db_path)
+
+    with closing(get_connection(db_path)) as connection:
+        with connection:
+            # The state check in the WHERE clause makes the transition atomic.
+            cursor = connection.execute(
+                """
+                UPDATE page
+                SET state = 'leased'
+                WHERE id = ? AND state = 'queued'
+                """,
+                (page_id,),
+            )
+            return cursor.rowcount == 1
+
+
+def get_page(db_path: str | Path, page_id: int) -> dict[str, Any]:
+    """Return a page row as a plain dictionary."""
+
+    _validate_positive_int(page_id, "page_id")
+    initialize_schema(db_path)
+
+    with closing(get_connection(db_path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM page WHERE id = ?",
+            (page_id,),
+        ).fetchone()
+
+    if row is None:
+        raise ValueError(f"page_id {page_id} does not exist")
+
+    return dict(row)
+
+
+def list_unfinished_depths(db_path: str | Path, job_id: int) -> list[int]:
+    """Return sorted depths that still have queued or leased work."""
+
+    _validate_positive_int(job_id, "job_id")
+    initialize_schema(db_path)
+
+    with closing(get_connection(db_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT depth
+            FROM page
+            WHERE job_id = ? AND state IN ('queued', 'leased')
+            ORDER BY depth ASC
+            """,
+            (job_id,),
+        ).fetchall()
+
+    return [int(row["depth"]) for row in rows]
+
+
+def set_job_current_depth(db_path: str | Path, job_id: int, depth: int) -> None:
+    """Update the current BFS depth for a crawl job."""
+
+    _validate_positive_int(job_id, "job_id")
+    _validate_non_negative_int(depth, "depth")
+    initialize_schema(db_path)
+
+    with closing(get_connection(db_path)) as connection:
+        with connection:
+            cursor = connection.execute(
+                "UPDATE crawl_job SET current_depth = ? WHERE id = ?",
+                (depth, job_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"job_id {job_id} does not exist")
 
 
 def update_page_state(
@@ -431,6 +598,39 @@ def store_page_content(
                     raise ValueError(f"page_id {page_id} does not exist")
 
 
+def complete_crawl_job(
+    db_path: str | Path,
+    job_id: int,
+    status: str = "completed",
+) -> None:
+    """Mark a crawl job finished and set its terminal timestamp.
+
+    Only terminal statuses are allowed here because this helper represents the
+    end of a crawl lifecycle, not a general status update function.
+    """
+
+    terminal_statuses = ("completed", "completed_with_errors", "failed", "stopped")
+
+    _validate_positive_int(job_id, "job_id")
+    if status not in terminal_statuses:
+        raise ValueError(f"status must be one of {terminal_statuses}")
+
+    initialize_schema(db_path)
+
+    with closing(get_connection(db_path)) as connection:
+        with connection:
+            cursor = connection.execute(
+                """
+                UPDATE crawl_job
+                SET status = ?, finished_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (status, job_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"job_id {job_id} does not exist")
+
+
 def get_status_counts(db_path: str | Path, job_id: int) -> dict[str, Any]:
     """Return job metadata and page state counts for a crawl job."""
 
@@ -489,12 +689,20 @@ def get_status_counts(db_path: str | Path, job_id: int) -> dict[str, Any]:
 
 
 __all__ = [
+    "complete_crawl_job",
     "create_crawl_job",
     "get_connection",
+    "get_job",
+    "get_page",
     "get_status_counts",
     "initialize_schema",
     "insert_discovered_page",
     "insert_origin_page",
+    "lease_page",
+    "list_queued_page_ids_at_depth",
+    "list_unfinished_depths",
+    "record_crawl_event",
+    "set_job_current_depth",
     "store_page_content",
     "update_page_state",
 ]
